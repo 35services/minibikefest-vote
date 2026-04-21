@@ -1,0 +1,84 @@
+<?php
+define('DB_HOST', 'your-db-host');
+define('DB_PORT', 3306);
+define('DB_NAME', 'your-db-name');
+define('DB_USER', 'your-db-user');
+define('DB_PASS', 'your-db-password');
+define('ADMIN_SECRET', 'change-this-to-a-long-random-string');
+define('COOKIE_NAME', 'mbf_vote');
+define('COOKIE_LIFETIME', 60 * 60 * 24 * 30);
+
+function getDB(): PDO {
+    static $pdo = null;
+    if ($pdo === null) {
+        $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', DB_HOST, DB_PORT, DB_NAME);
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+        initDB($pdo);
+    }
+    return $pdo;
+}
+
+function initDB(PDO $pdo): void {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS settings (
+        `key` VARCHAR(50) PRIMARY KEY,
+        `value` TEXT NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS contestants (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL UNIQUE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS votes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        contestant_id INT NOT NULL,
+        ip_address VARCHAR(45) NOT NULL,
+        cookie_id VARCHAR(64) NOT NULL,
+        voted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (contestant_id) REFERENCES contestants(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+    $pdo->exec("INSERT IGNORE INTO settings (`key`, `value`) VALUES ('voting_open', '1')");
+}
+
+function syncContestants(PDO $pdo): array {
+    $path = __DIR__ . '/contestants.md';
+    if (!file_exists($path)) return [];
+
+    $names = [];
+    foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        if (preg_match('/^#+\s+(.+)$/', trim($line), $m)) {
+            $names[] = trim($m[1]);
+        }
+    }
+
+    $insert = $pdo->prepare("INSERT IGNORE INTO contestants (name) VALUES (?)");
+    foreach ($names as $name) {
+        $insert->execute([$name]);
+    }
+
+    $result = [];
+    $fetch = $pdo->prepare("SELECT id, name FROM contestants WHERE name = ?");
+    foreach ($names as $name) {
+        $fetch->execute([$name]);
+        $row = $fetch->fetch();
+        if ($row) $result[] = $row;
+    }
+    return $result;
+}
+
+function isVotingOpen(PDO $pdo): bool {
+    return $pdo->query("SELECT `value` FROM settings WHERE `key` = 'voting_open'")->fetchColumn() === '1';
+}
+
+function getVoteCounts(PDO $pdo): array {
+    $rows = $pdo->query("SELECT contestant_id, COUNT(*) as cnt FROM votes GROUP BY contestant_id")->fetchAll();
+    $counts = [];
+    foreach ($rows as $row) {
+        $counts[(int)$row['contestant_id']] = (int)$row['cnt'];
+    }
+    return $counts;
+}
